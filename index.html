@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>PULSE</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:#05050c;overflow:hidden;font-family:system-ui,Arial,sans-serif;color:#fff;user-select:none;touch-action:none}
+#wrap{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+canvas{background:#0a0a18;display:block}
+.screen{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:rgba(5,5,12,.85)}
+.screen.on{display:flex}
+h1{font-size:72px;letter-spacing:12px;text-shadow:0 0 24px #0ff}
+h2{font-size:36px;letter-spacing:4px}
+button{font:inherit;font-size:22px;font-weight:700;padding:14px 40px;border:2px solid #0ff;background:transparent;color:#0ff;border-radius:10px;cursor:pointer;min-width:260px}
+button:hover{background:#0ff;color:#05050c}
+#grid{display:grid;grid-template-columns:repeat(5,minmax(0,140px));gap:14px;width:min(760px,94vw)}
+.lv{min-width:0;padding:14px 6px;font-size:14px;display:flex;flex-direction:column;align-items:center;gap:6px}
+.lv b{font-size:30px}
+.lv.lock{opacity:.3;pointer-events:none}
+.stars{color:#ffd23f;font-size:22px;letter-spacing:3px}
+p{opacity:.8}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c" width="1280" height="720"></canvas></div>
+
+<div id="menu" class="screen on">
+  <h1>PULSE</h1>
+  <button id="bLevels">NÍVEIS</button>
+  <button id="bEndless">INFINITO</button>
+  <p id="best"></p>
+</div>
+
+<div id="levels" class="screen">
+  <h2>NÍVEIS</h2>
+  <div id="grid"></div>
+  <button id="bBack">VOLTAR</button>
+</div>
+
+<div id="result" class="screen">
+  <h2 id="rTitle"></h2>
+  <div class="stars" id="rStars"></div>
+  <p id="rInfo"></p>
+  <button id="bRetry">JOGAR DE NOVO</button>
+  <button id="bNext">PRÓXIMO ▶</button>
+  <button id="bMenu">MENU</button>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
