@@ -9,6 +9,71 @@ const rnd = (a, b) => a + Math.random() * (b - a);
 const pick = a => a[Math.random() * a.length | 0];
 const SHAPES = ['square', 'diamond', 'circle', 'triangle'];
 
+// Fundo parallax: [velocidade, quantidade]
+const BG = [[0.08, 45], [0.2, 30], [0.35, 10]].map(([sp, n], l) => ({
+  sp, items: Array.from({ length: n }, () => ({
+    x: Math.random(), y: Math.random() * H, r: 1 + l,
+    s: pick(SHAPES), z: rnd(12, 32)
+  }))
+}));
+
+// ================= POKI SDK =================
+const poki = {
+  ok: false,
+  init() {
+    if (!window.PokiSDK) return Promise.resolve();
+    return PokiSDK.init().then(() => this.ok = true).catch(() => {});
+  },
+  call(fn) { if (this.ok) try { PokiSDK[fn](); } catch (e) {} },
+  ad() {
+    if (!this.ok) return Promise.resolve();
+    return PokiSDK.commercialBreak(() => ac && ac.suspend())   // silencia durante o anúncio
+      .catch(() => {}).then(() => ac && ac.resume());
+  }
+};
+let busy = false;
+const play = (m, lv) => {
+  if (busy) return; busy = true;
+  initAudio();                       // destrava o áudio ainda dentro do clique
+  poki.ad().then(() => { busy = false; start(m, lv); });
+};
+
+// ================= PAUSA =================
+let paused = false;
+const pauseEl = document.createElement('div');
+pauseEl.id = 'pause';
+pauseEl.style.cssText = 'position:fixed;inset:0;display:none;flex-direction:column;align-items:center;' +
+  'justify-content:center;background:rgba(10,10,24,.75);color:#fff;font-family:system-ui;' +
+  'z-index:50;cursor:pointer;user-select:none;text-align:center';
+pauseEl.innerHTML = '<h1 style="font-size:64px;margin:0;letter-spacing:4px">PAUSADO</h1>' +
+  '<p style="font-size:22px;opacity:.8">Toque ou pressione P para continuar</p>';
+document.body.appendChild(pauseEl);
+
+function pause() {
+  if (paused || state !== 'play' || g?.dead) return;
+  paused = true; clearInput();
+  poki.call('gameplayStop');
+  ac && ac.suspend();
+  pauseEl.style.display = 'flex';
+}
+function resume() {
+  if (!paused) return;
+  paused = false; clearInput();
+  last = performance.now();          // evita o "salto" do dt
+  poki.call('gameplayStart');
+  ac && ac.resume();
+  pauseEl.style.display = 'none';
+}
+pauseEl.addEventListener('pointerdown', e => { e.stopPropagation(); e.preventDefault(); resume(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { pause(); ac && ac.suspend(); }
+  else if (!paused && ac) ac.resume();   // só volta o som se não estiver pausado
+});
+window.addEventListener('blur', pause);
+addEventListener('keydown', e => {
+  if (e.code === 'Escape' || e.code === 'KeyP') { e.preventDefault(); paused ? resume() : pause(); }
+});
+
 // ================= SAVE =================
 const save = JSON.parse(localStorage.getItem('pulse_save') || '{"unlocked":1,"stars":{},"best":0}');
 const store = () => localStorage.setItem('pulse_save', JSON.stringify(save));
@@ -198,17 +263,33 @@ function music(b) {
 
 // ================= ESTADO =================
 let g = null, hold = false, state = 'menu';
-const setPlaying = on => document.body.classList.toggle('playing', on);
+
+const pBtn = document.createElement('button');
+pBtn.textContent = '❚❚';
+pBtn.style.cssText = 'position:fixed;top:12px;right:12px;width:56px;height:56px;min-width:0;padding:0;' +
+  'border-radius:50%;border:2px solid #fff6;background:#0006;color:#fff;font-size:20px;z-index:40;' +
+  'display:none;cursor:pointer';
+pBtn.addEventListener('pointerdown', e => e.stopPropagation());
+pBtn.onclick = e => { e.currentTarget.blur(); pause(); };
+document.body.appendChild(pBtn);
+
+const setPlaying = on => {
+  document.body.classList.toggle('playing', on);
+  pBtn.style.display = on ? 'block' : 'none';
+};
 
 function start(mode, lv = 0) {
   const L = mode === 'levels' ? LEVELS[lv] : null;
   g = { mode, lv, L, t:0, dist:0, speed:L?L.speed:420, hue:L?L.hue:185, y:MID, vy:0,
         obs:[], endX:Infinity, startX:PX, bonus:0, beat:-1, env:0, trail:[], pops:[], parts:[],
-        dead:false, deadT:0, cam:0, gen:{ x:PX+800, cy:MID, hard:0, seen:new Set() } };
+        dead:false, deadT:0, cam:0, sparks:[], near:null, sparkT:0,
+        gen:{ x:PX+800, cy:MID, hard:0, seen:new Set() } };
+
   if (L) { let x = PX + 200; for (const s of L.segs) x = addSeg(s, x, g.obs, L.pinkEvery); g.endX = x + 300; }
-  hold = false; state = 'play'; show(null); initAudio(); setPlaying(true);
+  clearInput(); paused = false; pauseEl.style.display = 'none';
+  state = 'play'; show(null); initAudio(); setPlaying(true);
   musLP.frequency.setTargetAtTime(18000, ac.currentTime, .05);
-  // PokiSDK.gameplayStart();
+  poki.call('gameplayStart');
 }
 
 // ================= COLISÃO =================
@@ -230,18 +311,27 @@ const graze = () => bonus(5, 'RASPANDO! +5', '#0ff');
 
 function collide() {
   const px = g.dist + PX, y = g.y;
+  g.near = null; // Y do ponto de raspão neste frame
+
   if (y - PR < BORDER || y + PR > H - BORDER) return die();
   for (const o of g.obs) {
     if (o.k === 'tunnel' || o.k === 'gate') {
       if (px < o.x0 || px > o.x1) continue;
       const cy = wallCy(o, px), top = cy - o.gap / 2, bot = cy + o.gap / 2;
       if (y - PR < top || y + PR > bot) return die();
-      if (!o.g && Math.min(y - PR - top, bot - y - PR) < 10) { o.g = 1; graze(); }
+      const dT = y - PR - top, dB = bot - y - PR;
+      if (Math.min(dT, dB) < 10) {
+        g.near = dT < dB ? top : bot;
+        if (!o.g) { o.g = 1; graze(); }
+      }
     } else if (o.k === 'island') {
       const dx = px - o.x, dy = y - o.y; if (Math.abs(dx) > 200) continue;
       const h = islandHalf(o) * 0.9;
       if (inShape(o.shape, dx, dy, h, PR)) return die();
-      if (!o.g && inShape(o.shape, dx, dy, h, PR + 16)) { o.g = 1; graze(); }
+      if (inShape(o.shape, dx, dy, h, PR + 16)) {
+        g.near = y + (dy > 0 ? -PR : PR); // borda do jogador voltada para a ilha
+        if (!o.g) { o.g = 1; graze(); }
+      }
     } else if (o.k === 'pink') {
       if (Math.abs(px - o.x) < o.w / 2 + PR) {
         if (o.lock === undefined) o.lock = pinkTop(o);
@@ -252,11 +342,11 @@ function collide() {
 }
 
 function die() {
+  navigator.vibrate?.(120);
   g.dead = true; g.deadT = .9; g.shake = 14; crash();
   if (musLP) musLP.frequency.setTargetAtTime(350, ac.currentTime, .08);
   for (let i = 0; i < 30; i++) { const a = rnd(0, 6.28), s = rnd(100, 500);
     g.parts.push({ x:g.dist+PX, y:g.y, vx:Math.cos(a)*s, vy:Math.sin(a)*s, t:rnd(.4,.9) }); }
-  // PokiSDK.gameplayStop();
 }
 
 // ================= UPDATE =================
@@ -274,9 +364,10 @@ function update(dt) {
   g.env = Math.max(0, g.env - dt * 4);
   g.cam = Math.max(0, g.cam - dt * 5);
 
-
   for (const p of g.parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.t -= dt; }
   g.parts = g.parts.filter(p => p.t > 0);
+  for (const s of g.sparks) { s.x += s.vx * dt; s.y += s.vy * dt; s.vy += 600 * dt; s.t -= dt; }
+  g.sparks = g.sparks.filter(s => s.t > 0);
   for (const p of g.pops) { p.t -= dt; p.y -= 40 * dt; }
   g.pops = g.pops.filter(p => p.t > 0);
 
@@ -289,6 +380,14 @@ function update(dt) {
   g.trail.push({ x: g.dist + PX, y: g.y }); if (g.trail.length > 40) g.trail.shift();
 
   collide();
+  if (g.near !== null && !g.dead && (g.sparkT -= dt) <= 0 && g.sparks.length < 120) {
+    g.sparkT = 0.03;
+    for (let i = 0; i < 3; i++) g.sparks.push({
+      x: g.dist + PX, y: g.near,
+      vx: rnd(-420, -150), vy: rnd(-160, 160), t: rnd(.2, .45)
+    });
+  }
+
   if (!g.dead && g.dist + PX > g.endX) { yay(); showResult(true); }
 }
 
@@ -309,12 +408,27 @@ function draw() {
   ctx.setTransform(VIEW, 0, 0, VIEW, 0, 0);
   if (!g) return;
   const hue = g.hue, col = `hsl(${hue},100%,60%)`, fill = `hsla(${hue},100%,50%,.22)`;
-  const sh = g.shake; g.shake *= .9;
+  const sh = paused ? 0 : g.shake; if (!paused) g.shake *= .9;
   const z = 1 + g.cam * 0.025;                                   // zoom no beat
   ctx.translate(PX, MID); ctx.scale(z, z); ctx.translate(-PX, -MID); // centrado no jogador
   ctx.translate((Math.random() - .5) * sh, (Math.random() - .5) * sh);
 
   const sx = x => x - g.dist;
+
+  // fundo em camadas (parallax)
+  const span = W + 200;
+  BG.forEach((L, l) => {
+    for (const it of L.items) {
+      const x = ((it.x * span - g.dist * L.sp) % span + span) % span - 100;
+      if (l < 2) {                                            // estrelas
+        ctx.fillStyle = `hsla(${hue},80%,85%,${.25 + l * .2})`;
+        ctx.fillRect(x, it.y, it.r, it.r);
+      } else {                                                // formas pulsando
+        ctx.strokeStyle = `hsla(${hue},100%,60%,${.07 + g.env * .06})`; ctx.lineWidth = 2;
+        shapePath(it.s, x, it.y, it.z * (1 + g.env * .12)); ctx.stroke();
+      }
+    }
+  });
 
   ctx.strokeStyle = `hsla(${hue},100%,60%,${.06 + g.env * .08})`; ctx.lineWidth = 1;
   for (let x = -(g.dist * .5 % 80); x < W; x += 80) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
@@ -361,13 +475,18 @@ function draw() {
   }
   ctx.fillStyle = '#fff';
   for (const p of g.parts) { ctx.globalAlpha = p.t; ctx.fillRect(sx(p.x) - 3, p.y - 3, 6, 6); }
+  ctx.strokeStyle = `hsl(${hue},100%,75%)`; ctx.lineWidth = 2;
+  for (const s of g.sparks) {
+    ctx.globalAlpha = Math.min(1, s.t * 3);
+    const x = sx(s.x);
+    ctx.beginPath(); ctx.moveTo(x, s.y); ctx.lineTo(x - s.vx * .03, s.y - s.vy * .03); ctx.stroke();
+  }
+
   ctx.globalAlpha = 1; ctx.shadowBlur = 0;
 
   ctx.setTransform(VIEW, 0, 0, VIEW, 0, 0);                      // HUD sem zoom/tremor
-  if (g.cam > 0 && !g.dead) {                                    // flash no beat
-    ctx.fillStyle = `hsla(${hue},100%,70%,${g.cam * 0.08})`; ctx.fillRect(0, 0, W, H);
-  }
   ctx.font = 'bold 40px system-ui'; ctx.textAlign = 'left'; ctx.fillStyle = '#fff';
+
   ctx.fillText(score(), 40, 70);
 
   ctx.textAlign = 'center'; ctx.font = 'bold 22px system-ui';
@@ -377,6 +496,13 @@ function draw() {
     ctx.fillStyle = col; ctx.fillRect(W / 2 - 200, 70, 400 * progress(), 8);
   } else ctx.fillText(`INFINITO · RECORDE ${save.best}`, W / 2, 55);
   for (const p of g.pops) { ctx.globalAlpha = Math.min(1, p.t * 2); ctx.fillStyle = p.c; ctx.fillText(p.txt, PX + 90, p.y); }
+
+  // dica de controle nos primeiros 3 segundos
+  if (g.t < 3 && !g.dead) {
+    ctx.globalAlpha = Math.min(1, 3 - g.t) * (.6 + .4 * Math.sin(g.t * 8));
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 30px system-ui';
+    ctx.fillText(isMobile ? 'TOQUE E SEGURE PARA SUBIR' : 'SEGURE ESPAÇO PARA SUBIR', W / 2, H - 70);
+  }
   ctx.globalAlpha = 1;
 }
 const score = () => Math.floor(g.dist / 100) + g.bonus;
@@ -386,7 +512,7 @@ const progress = () => clamp((g.dist + PX - g.startX) / (g.endX - g.startX), 0, 
 function show(id) { document.querySelectorAll('.screen').forEach(s => s.classList.toggle('on', s.id === id)); }
 
 function showResult(won) {
-  state = 'end'; setPlaying(false); let title, info, stars = '';
+  state = 'end'; setPlaying(false); clearInput(); poki.call('gameplayStop'); let title, info, stars = '';
   $('bNext').style.display = 'none';
   if (g.mode === 'endless') {
     const s = score(); if (s > save.best) save.best = s;
@@ -401,7 +527,6 @@ function showResult(won) {
   store();
   $('rTitle').textContent = title; $('rStars').textContent = stars; $('rInfo').textContent = info;
   show('result');
-  // PokiSDK.commercialBreak() antes de reiniciar
 }
 
 function renderGrid() {
@@ -411,16 +536,16 @@ function renderGrid() {
     const b = document.createElement('button');
     b.className = 'lv' + (ok ? '' : ' lock');
     b.innerHTML = `<b>${i + 1}</b>${n}<span class="stars">${'★'.repeat(st)}${'☆'.repeat(3 - st)}</span>`;
-    b.onclick = () => start('levels', i); gr.appendChild(b);
+    b.onclick = () => play('levels', i); gr.appendChild(b);
   });
 }
 const updBest = () => $('best').textContent = save.best ? `Recorde infinito: ${save.best}` : '';
 
 $('bLevels').onclick = () => { renderGrid(); show('levels'); };
-$('bEndless').onclick = () => start('endless');
+$('bEndless').onclick = () => play('endless');
 $('bBack').onclick = () => show('menu');
-$('bRetry').onclick = () => start(g.mode, g.lv);
-$('bNext').onclick = () => start('levels', g.lv + 1);
+$('bRetry').onclick = () => play(g.mode, g.lv);
+$('bNext').onclick = () => play('levels', g.lv + 1);
 $('bMenu').onclick = () => { g = null; state = 'menu'; setPlaying(false); updBest(); show('menu'); };
 
 // ================= TELA / FULLSCREEN =================
@@ -445,17 +570,22 @@ if (isMobile) addEventListener('pointerdown', e => { if (!isFS() && e.target.id 
 
 addEventListener('contextmenu', e => e.preventDefault());
 
-document.addEventListener('visibilitychange', () => {
-  if (!ac) return; document.hidden ? ac.suspend() : ac.resume();
-});
-
 // ================= INPUT =================
 const KEYS = ['Space', 'ArrowUp', 'KeyW'];
-cv.addEventListener('pointerdown', e => { if (state === 'play') { hold = true; e.preventDefault(); } });
-addEventListener('pointerup', () => hold = false);
-addEventListener('pointercancel', () => hold = false);
-addEventListener('keydown', e => { if (KEYS.includes(e.code)) { hold = true; e.preventDefault(); } });
-addEventListener('keyup', e => { if (KEYS.includes(e.code)) hold = false; });
+const touches = new Set(); let keyHold = false;
+const updHold = () => hold = !paused && state === 'play' && (touches.size > 0 || keyHold);
+function clearInput() { touches.clear(); keyHold = false; hold = false; }
+
+addEventListener('pointerdown', e => {
+  if (state !== 'play' || paused || e.target.closest('button')) return;
+  touches.add(e.pointerId); updHold(); e.preventDefault();
+}, { passive: false });
+const release = e => { touches.delete(e.pointerId); updHold(); };
+addEventListener('pointerup', release);
+addEventListener('pointercancel', release);
+
+addEventListener('keydown', e => { if (KEYS.includes(e.code)) { e.preventDefault(); keyHold = true; updHold(); } });
+addEventListener('keyup', e => { if (KEYS.includes(e.code)) { keyHold = false; updHold(); } });
 addEventListener('keydown', e => { if (e.code === 'KeyM' && mix) {
   save.mute = !save.mute; store(); mix.gain.setTargetAtTime(save.mute ? 0 : 1, ac.currentTime, .05); } });
 
@@ -469,9 +599,11 @@ function resize() {
 addEventListener('resize', resize);
 addEventListener('orientationchange', () => setTimeout(resize, 200));
 resize(); updBest();
+poki.init().then(() => poki.call('gameLoadingFinished'));
 
 let last = performance.now();
 (function loop(now) {
   const dt = Math.min(1 / 30, (now - last) / 1000); last = now;
-  update(dt); draw(); requestAnimationFrame(loop);
+  if (!paused) update(dt);
+  draw(); requestAnimationFrame(loop);
 })(last);
